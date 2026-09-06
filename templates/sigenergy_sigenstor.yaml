@@ -106,7 +106,7 @@ pred_bat:
     - sensor.sigen_plant_available_max_active_power
 
   # Export limit is a software limit set on your inverter that prevents exporting above a given level
-  # When enabled Predbat will model this limit
+  # e.g. a DNO/G98/G99 grid export limit. When enabled Predbat will model this limit
   #export_limit:
   #  - 3600
   #  - 3600
@@ -118,6 +118,13 @@ pred_bat:
   #  - 4000
   #inverter_limit_discharge:
   #  - 4000
+
+  # Sigenstor is a hybrid/DC-coupled inverter - PV connects directly to the DC bus so the battery can
+  # charge from solar faster than the AC inverter_limit above allows (some Sigenstor systems report a
+  # battery rated charge power roughly double their AC inverter rating). switch.predbat_inverter_hybrid
+  # defaults to On, but inverter_limit_charge_dc has no sensible default and must be set explicitly, e.g:
+  #inverter_limit_charge_dc:
+  #  - sensor.sigen_inverter_ess_rated_charging_power
 
   # Some inverters don't turn off when the rate is set to 0, still charge or discharge at around 200w
   # The value can be set here in watts to model this (doesn't change operation)
