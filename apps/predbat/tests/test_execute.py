@@ -201,6 +201,8 @@ def run_execute_test(
     has_ge_eco_toggle=False,
     inverter_hybrid=False,
     battery_max_rate=1000,
+    battery_max_rate_dc=None,
+    pv_power=0,
     battery_max_export_rate=None,
     minutes_now=12 * 60,
     update_plan=False,
@@ -238,10 +240,12 @@ def run_execute_test(
         assert_discharge_rate = battery_max_rate
     if battery_max_export_rate is None:
         battery_max_export_rate = battery_max_rate
+    if battery_max_rate_dc is None:
+        battery_max_rate_dc = battery_max_rate
 
     total_inverters = len(my_predbat.inverters)
     my_predbat.battery_rate_max_charge = battery_max_rate / 1000.0 * total_inverters / 60.0
-    my_predbat.battery_rate_max_charge_dc = battery_max_rate / 1000.0 * total_inverters / 60.0
+    my_predbat.battery_rate_max_charge_dc = battery_max_rate_dc / 1000.0 * total_inverters / 60.0
     my_predbat.battery_rate_max_discharge = battery_max_rate / 1000.0 * total_inverters / 60.0
     my_predbat.battery_rate_max_export = battery_max_export_rate / 1000.0 * total_inverters / 60.0
     my_predbat.set_reserve_enable = set_reserve_enable
@@ -273,6 +277,7 @@ def run_execute_test(
         inverter.battery_temperature = battery_temperature
 
     my_predbat.fetch_inverter_data(create=False)
+    my_predbat.pv_power = pv_power
 
     if my_predbat.soc_kw != soc_kw:
         print("ERROR: Predbat level SOC should be {} got {}".format(soc_kw, my_predbat.soc_kw))
@@ -625,6 +630,51 @@ def run_execute_tests(my_predbat):
         assert_status="Charging",
         assert_charge_start_time_minutes=-1,
         assert_charge_end_time_minutes=my_predbat.minutes_now + 60,
+    )
+    if failed:
+        return failed
+
+    # Hybrid inverter with a higher DC charge rate: solar above the AC rate (6600W/inverter here)
+    # should boost the commanded charge rate up to the DC ceiling (9200W/inverter), using the
+    # whole-system pv_power (16000W) shared evenly across the 2 test inverters (8000W each).
+    failed |= run_execute_test(
+        my_predbat,
+        "charge_hybrid_dc_pv_boost",
+        charge_window_best=charge_window_best,
+        charge_limit_best=charge_limit_best,
+        assert_charge_time_enable=True,
+        set_charge_window=True,
+        set_export_window=True,
+        assert_status="Charging",
+        assert_charge_start_time_minutes=-1,
+        assert_charge_end_time_minutes=my_predbat.minutes_now + 60,
+        inverter_hybrid=True,
+        battery_max_rate=6600,
+        battery_max_rate_dc=9200,
+        pv_power=16000,
+        assert_charge_rate=8000,
+    )
+    if failed:
+        return failed
+
+    # Same hybrid/DC setup but with no solar available: the commanded rate must stay at the
+    # plain AC rate, confirming the DC boost only applies when there's actual PV to use.
+    failed |= run_execute_test(
+        my_predbat,
+        "charge_hybrid_dc_no_pv",
+        charge_window_best=charge_window_best,
+        charge_limit_best=charge_limit_best,
+        assert_charge_time_enable=True,
+        set_charge_window=True,
+        set_export_window=True,
+        assert_status="Charging",
+        assert_charge_start_time_minutes=-1,
+        assert_charge_end_time_minutes=my_predbat.minutes_now + 60,
+        inverter_hybrid=True,
+        battery_max_rate=6600,
+        battery_max_rate_dc=9200,
+        pv_power=0,
+        assert_charge_rate=6600,
     )
     if failed:
         return failed

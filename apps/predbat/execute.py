@@ -129,12 +129,27 @@ class Execute:
                         inv_target_soc = self.adjust_battery_target_multi(inverter, target_soc, True, False, check=True)
 
                         current_charge_rate = inverter.get_current_charge_rate()
+
+                        # Hybrid inverters can charge the battery from solar via the DC bus faster than
+                        # inverter.battery_rate_max_charge (the AC throughput ceiling) allows. Blend in any
+                        # solar above the AC rate, up to the DC ceiling, so a live forced charge can also take
+                        # advantage of available solar - mirroring the combined-rate calculation prediction.py
+                        # already uses to forecast this window (see battery_rate_max_charge_combined there).
+                        # self.pv_power is the whole-system reading so share it evenly across inverters to
+                        # avoid crediting the same solar to each one in a multi-inverter installation.
+                        if self.inverter_hybrid and (inverter.battery_rate_max_charge_dc > inverter.battery_rate_max_charge):
+                            pv_now_share = self.pv_power / len(self.inverters) / MINUTE_WATT
+                            pv_above = max(pv_now_share - inverter.battery_rate_max_charge, 0)
+                            battery_rate_max_charge_combined = inverter.battery_rate_max_charge + min(inverter.battery_rate_max_charge_dc - inverter.battery_rate_max_charge, pv_above)
+                        else:
+                            battery_rate_max_charge_combined = inverter.battery_rate_max_charge
+
                         new_charge_rate, new_charge_rate_real = find_charge_rate(
                             self.minutes_now,
                             inverter.soc_kw,
                             window,
                             inv_target_soc * inverter.soc_max / 100.0,
-                            inverter.battery_rate_max_charge,
+                            battery_rate_max_charge_combined,
                             inverter.soc_max,
                             self.battery_charge_power_curve,
                             self.set_charge_low_power,
@@ -156,7 +171,7 @@ class Execute:
                         )
 
                         # Adjust charge rate if we are more than 10% out or we are going back to Max charge rate
-                        max_rate = inverter.battery_rate_max_charge * MINUTE_WATT
+                        max_rate = battery_rate_max_charge_combined * MINUTE_WATT
                         if abs(new_charge_rate - current_charge_rate) > (0.1 * max_rate) or (new_charge_rate == max_rate):
                             inverter.adjust_charge_rate(new_charge_rate)
                         resetCharge = False
