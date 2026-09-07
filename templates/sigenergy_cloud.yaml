@@ -1,0 +1,174 @@
+# ------------------------------------------------------------------
+# This is an example configuration, please modify it
+# ------------------------------------------------------------------
+---
+pred_bat:
+  module: predbat
+  class: PredBat
+
+  # Sets the prefix for all created entities in HA - only change if you want to run more than once instance
+  prefix: predbat
+
+  # Timezone to work in
+  timezone: Europe/London
+
+  # XXX: Template configuration, delete this line once you have set up for your system
+  template: True
+
+  # Currency, symbol for main currency second symbol for 1/100s e.g. $ c or £ p or e c
+  currency_symbols:
+    - '£'
+    - 'p'
+
+  # Number of threads to use in plan calculation
+  # Can be auto for automatic, 0 for off or values 1-N for a fixed number
+  threads: auto
+
+  # Sigenergy Cloud API - see docs/inverter-setup.md#sigenergy-cloud for how to obtain these
+  # and for the onboarding approval steps that must be completed before Predbat can control your system.
+  # It's recommended to store these values in secrets.yaml instead, e.g. sigenergy_app_key: !secret sigenergy_app_key
+  sigenergy_app_key: 'xxxxxxx'
+  sigenergy_app_secret: 'xxxxxxx'
+  sigenergy_ca_pem: 'xxxxxxx'
+  sigenergy_client_pem: 'xxxxxxx'
+  sigenergy_client_key: 'xxxxxxx'
+
+  # With automatic: true Predbat wires all sensor and control entities itself - no manual
+  # inverter/battery/pv/grid sensor mapping is required below (unlike the local Modbus template).
+  sigenergy_automatic: True
+
+  # You must set at least one system ID - it is required to onboard your system.
+  # Find it in the SigEnergy app under Settings -> System Settings -> About -> System ID.
+  sigenergy_system_id:
+    - "YOUR_SYSTEM_ID"
+
+  # Inverter clock skew in minutes, e.g. 1 means it's 1 minute fast and -1 is 1 minute slow
+  # Separate start and end options are applied to the start and end time windows, mostly as you want to start late (not early) and finish early (not late)
+  # Separate discharge skew for discharge windows only
+  inverter_clock_skew_start: 0
+  inverter_clock_skew_end: 0
+  inverter_clock_skew_discharge_start: 0
+  inverter_clock_skew_discharge_end: 0
+
+  # Clock skew adjusts the Appdaemon time
+  # This is the time that Predbat takes actions like starting discharge/charging
+  # Only use this for workarounds if your inverter time is correct but Predbat is somehow wrong (AppDaemon issue)
+  # 1 means add 1 minute to AppDaemon time, -1 takes it away
+  clock_skew: 0
+
+  # Solcast cloud interface, set this or the local interface below
+  #solcast_host: 'https://api.solcast.com.au/'
+  #solcast_api_key: 'xxxx'
+  #solcast_poll_hours: 8
+
+  # Set these to match solcast sensor names if not using the cloud interface
+  # The regular expression (re:) makes the solcast bit optional
+  # If these don't match find your own names in Home Assistant
+  pv_forecast_today: re:(sensor.(solcast_|)(pv_forecast_|)forecast_today)
+  pv_forecast_tomorrow: re:(sensor.(solcast_|)(pv_forecast_|)forecast_tomorrow)
+  pv_forecast_d3: re:(sensor.(solcast_|)(pv_forecast_|)forecast_(day_3|d3))
+  pv_forecast_d4: re:(sensor.(solcast_|)(pv_forecast_|)forecast_(day_4|d4))
+
+  # car_charging_energy defines an incrementing sensor which measures the charge added to your car
+  # is used for car_charging_hold feature to filter out car charging from the previous load data
+  # Automatically set to detect Wallbox and Zappi, if it doesn't match manually enter your sensor name
+  # Also adjust car_charging_energy_scale if it's not in kwH to fix the units
+  # car_charging_energy: 're:(sensor.myenergi_zappi_[0-9a-z]+_charge_added_session|sensor.wallbox_portal_added_energy)'
+
+  num_cars: 0
+
+  # If you have Octopus Intelligent Go and are not using the Octopus Direct connection method, enable the intelligent slot information to add to pricing
+  # Will automatically disable if not found, or comment out to disable fully
+  octopus_intelligent_slot: 're:(binary_sensor.octopus_energy([0-9a-z_]+|)_intelligent_dispatching)'
+  octopus_ready_time: 're:((select|time).octopus_energy_([0-9a-z_]+|)_intelligent_target_time)'
+  octopus_charge_limit: 're:(number.octopus_energy([0-9a-z_]+|)_intelligent_charge_target)'
+
+  # Carbon Intensity data from National grid
+  # carbon_postcode: 'SW1 5NA'
+  # carbon_automatic: True
+
+  # Octopus saving session points to the saving session Sensor in the Octopus plugin, when enabled saving sessions will be at the assumed
+  # Rate is read automatically from the add-in and converted to pence using the conversion rate below (default is 8)
+  octopus_saving_session: 're:(event.octopus_energy([0-9a-z_]+|)_saving_session_event(s|))'
+  octopus_saving_session_octopoints_per_penny: 8
+
+  # Enter your Axle VPP API key if you have signed up to the Axle service in the UK
+  # axle_api_key: "xxxxxxx"
+
+  # Energy rates
+  # Please set one of these three, if multiple are set then Octopus is used first, second rates_import/rates_export and latest basic metric
+  metric_octopus_import: 're:(sensor.(octopus_energy_|)electricity_[0-9a-z]+_[0-9a-z]+_current_rate)'
+  metric_octopus_export: 're:(sensor.(octopus_energy_|)electricity_[0-9a-z]+_[0-9a-z]+_export_current_rate)'
+
+  # Standing charge can be set to a sensor (e.g. Octopus) or manually entered in pounds here (e.g. 0.50 is 50p)
+  metric_standing_charge: 're:(sensor.(octopus_energy_|)electricity_[0-9a-z]+_[0-9a-z]+_current_standing_charge)'
+
+  # Or set your actual rates across time for import and export
+  # If start/end is missing it's assumed to be a fixed rate
+  # Gaps are filled with 0
+  # rates_import:
+  #   - start: "23:30:00"
+  #     end: "05:30:00"
+  #     rate: 7.5
+  #   - start: "05:30:00"
+  #     end: "23:30:00"
+  #     rate: 30.0
+
+  # rates_export:
+  #   - rate: 15.0
+
+  # Days previous is the number of days back to find historical load data
+  # Recommended is 7 to capture day of the week but 1 can also be used
+  # if you have more history you could use 7 and 14 (in a list) but the standard data in HA only lasts 10 days
+  days_previous:
+    - 7
+
+  # Days previous weight can be used to control the weighting of the previous load points, the values are multiplied by their
+  # weights and then divided through by the total weight. E.g. if you used 1 and 0.5 then the first value would have 2/3rd of the weight and the second 1/3rd
+  days_previous_weight:
+    - 1
+
+  # Number of hours forward to forecast, best left as-is unless you have specific reason
+  forecast_hours: 30
+
+  # The number of hours ahead to count in charge planning (for cost estimates)
+  forecast_plan_hours: 30
+
+  # Specify the devices that notifies are sent to, the default is 'notify' which goes to all
+  #notify_devices:
+  #  - mobile_app_treforsiphone12_2
+
+  # Battery scaling makes the battery smaller (e.g. 0.9) or bigger than its reported
+  # If you have an 80% DoD battery that falsely reports it's kwh then set it to 0.8 to report the real figures
+  battery_scaling: 1.0
+
+  # Can be used to scale import and export data, used for workarounds
+  import_export_scaling: 1.0
+
+  # Export triggers:
+  # For each trigger give a name, the minutes of export needed and the energy required in that time
+  # Multiple triggers can be set at once so in total you could use too much energy if all run
+  # Creates an entity called 'binary_sensor.predbat_export_trigger_<name>' which will be turned On when the condition is valid
+  # connect this to your automation to start whatever you want to trigger
+  export_triggers:
+    - name: 'large'
+      minutes: 60
+      energy: 1.0
+    - name: 'small'
+      minutes: 15
+      energy: 0.25
+
+  # Nordpool market energy rates
+  #futurerate_url: 'https://dataportal-api.nordpoolgroup.com/api/DayAheadPrices?date=DATE&market=N2EX_DayAhead&deliveryArea=UK&currency=GBP'
+  #futurerate_adjust_import: False
+  #futurerate_adjust_export: False
+  #futurerate_peak_start: "16:00:00"
+  #futurerate_peak_end: "19:00:00"
+  #futurerate_peak_premium_import: 14
+  #futurerate_peak_premium_export: 6.5
+
+  # If you have a sensor that gives the energy consumed by your solar diverter then add it here
+  # this will make the predictions more accurate. It should be an incrementing sensor, it can reset at midnight or not
+  # It's assumed to be in Kwh but scaling can be applied if need be
+  #iboost_energy_today: 'sensor.xxxxx'
+  #iboost_energy_scaling: 1.0

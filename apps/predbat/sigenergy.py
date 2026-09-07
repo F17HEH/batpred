@@ -1083,6 +1083,27 @@ class SigenergyAPI(ComponentBase):
         else:
             return inverter_power
 
+    def _get_battery_max_charge_power_dc_kw(self, system_id):
+        """Return the uncapped rated DC battery charge power in kW for a system.
+
+        Sigenstor is a hybrid/DC-coupled system: PV feeds the battery directly
+        via the DC bus, so the battery can be charged from solar faster than
+        the AC inverter's rated output (``_get_battery_max_power_kw``, which is
+        deliberately capped at ``_get_inverter_max_power_kw`` for AC-side/control
+        defaults). This value is only used to populate ``inverter_limit_charge_dc``
+        so Predbat's prediction model can account for that higher DC charge rate;
+        it does not change any control command sent to the inverter.
+
+        Falls back to the (AC-capped) battery max power when no battery device
+        reports ``ratedChargePower`` so the sensor is never lower than reality.
+        """
+        power = 0.0
+        for device in self.devices.get(system_id, []):
+            if device.get("deviceType") == SIGENERGY_DEVICE_BATTERY:
+                attr = device.get("attrMap", {})
+                power += _safe_float(attr.get("ratedChargePower", 0))
+        return power if power > 0 else self._get_battery_max_power_kw(system_id)
+
     def _get_inverter_max_power_kw(self, system_id):
         """Return the combined inverter rated active power in kW."""
         power = 0.0
@@ -1417,6 +1438,7 @@ class SigenergyAPI(ComponentBase):
         capacity_kwh = self._get_battery_capacity_kwh(system_id)
         battery_soc_kwh = round(battery_soc_pct * capacity_kwh / 100.0, 3)
         battery_max_kw = self._get_battery_max_power_kw(system_id)
+        battery_max_charge_dc_kw = self._get_battery_max_charge_power_dc_kw(system_id)
         inverter_max_kw = self._get_inverter_max_power_kw(system_id)
 
         # --- Battery SOC (kWh) ---
@@ -1549,6 +1571,18 @@ class SigenergyAPI(ComponentBase):
             app="sigenergy",
         )
 
+        # --- Battery max DC charge power (W) — uncapped, for inverter_limit_charge_dc ---
+        self.dashboard_item(
+            "sensor.{}_sigenergy_{}_battery_rate_max_charge_dc".format(self.prefix, slug),
+            state=round(battery_max_charge_dc_kw * 1000),
+            attributes={
+                "friendly_name": "Sigenergy {} Battery Max DC Charge Power".format(system_name),
+                "unit_of_measurement": "W",
+                "device_class": "power",
+            },
+            app="sigenergy",
+        )
+
         # --- Inverter limit (W) ---
         self.dashboard_item(
             "sensor.{}_sigenergy_{}_inverter_limit".format(self.prefix, slug),
@@ -1647,6 +1681,12 @@ class SigenergyAPI(ComponentBase):
         self.set_arg("battery_power", ["sensor.{}_sigenergy_{}_battery_power".format(self.prefix, s) for s in slugs])
         self.set_arg("battery_rate_max", ["sensor.{}_sigenergy_{}_battery_rate_max".format(self.prefix, s) for s in slugs])
         self.set_arg("inverter_limit", ["sensor.{}_sigenergy_{}_inverter_limit".format(self.prefix, s) for s in slugs])
+        # Sigenstor is a DC-coupled hybrid system: PV charges the battery directly via the DC bus,
+        # so the battery can charge from solar faster than the AC inverter_limit allows. Enable
+        # inverter_hybrid and give Predbat the true (uncapped) DC charge rate so ECO mode charging
+        # from solar isn't wrongly throttled to the AC inverter rating.
+        self.set_arg("inverter_limit_charge_dc", ["sensor.{}_sigenergy_{}_battery_rate_max_charge_dc".format(self.prefix, s) for s in slugs])
+        self.set_state_wrapper("switch.{}_inverter_hybrid".format(self.prefix), "on", attributes={})
         self.set_arg("pv_power", ["sensor.{}_sigenergy_{}_pv_power".format(self.prefix, s) for s in slugs])
         self.set_arg("grid_power", ["sensor.{}_sigenergy_{}_grid_power".format(self.prefix, s) for s in slugs])
         self.set_arg("load_power", ["sensor.{}_sigenergy_{}_load_power".format(self.prefix, s) for s in slugs])

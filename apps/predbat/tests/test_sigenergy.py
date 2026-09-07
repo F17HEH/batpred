@@ -275,6 +275,34 @@ def test_sigenergy_battery_max_power(my_predbat):
     return failed
 
 
+def test_sigenergy_battery_max_charge_power_dc(my_predbat):
+    """Test _get_battery_max_charge_power_dc_kw is NOT capped at inverter (AC) power.
+
+    Real Sigenstor systems report a battery rated charge power (DC bus) well above
+    the AC inverter's rated active power (e.g. 22kW battery vs 12kW inverter) —
+    this is what lets Predbat's inverter_limit_charge_dc model the faster DC solar
+    charging rate instead of throttling it to the AC inverter_limit.
+    """
+    failed = False
+    api = MockSigenergyAPI()
+
+    # Battery DC charge power (22kW) exceeds inverter AC rating (12kW) — must stay uncapped
+    api.devices["sys1"] = [
+        {"deviceType": "Battery", "attrMap": {"ratedChargePower": 22.0}},
+        {"deviceType": "Inverter", "attrMap": {"ratedActivePower": 12.0}},
+    ]
+    assert api._get_battery_max_charge_power_dc_kw("sys1") == 22.0, "DC battery charge power not capped at AC inverter rating"
+    assert api._get_battery_max_power_kw("sys1") == 12.0, "AC-capped helper is unaffected (still capped)"
+
+    # No battery device reporting ratedChargePower — falls back to the (AC-capped) battery max power
+    api.devices["sys2"] = [
+        {"deviceType": "Inverter", "attrMap": {"ratedActivePower": 8.0}},
+    ]
+    assert api._get_battery_max_charge_power_dc_kw("sys2") == 8.0, "Falls back to _get_battery_max_power_kw when no battery data"
+
+    return failed
+
+
 def test_sigenergy_battery_capacity(my_predbat):
     """Test _get_battery_capacity_kwh falls back to device data."""
     failed = False
@@ -365,6 +393,14 @@ def test_sigenergy_automatic_config(my_predbat):
     assert "grid_power" in api.set_args, "grid_power wired"
     assert "inverter_time" in api.set_args, "inverter_time wired"
     assert len(api.set_args["inverter_time"]) == 2, "inverter_time has one entry per system"
+
+    # Sigenstor is always a DC-coupled hybrid system: inverter_hybrid must be turned on
+    # and inverter_limit_charge_dc wired so ECO-mode solar charging isn't capped at the AC rating
+    assert "inverter_limit_charge_dc" in api.set_args, "inverter_limit_charge_dc wired"
+    assert len(api.set_args["inverter_limit_charge_dc"]) == 2, "inverter_limit_charge_dc has one entry per system"
+    hybrid_entity = api.dashboard_items.get("switch.predbat_inverter_hybrid")
+    assert hybrid_entity is not None, "inverter_hybrid switch entity set"
+    assert hybrid_entity["state"] == "on", "inverter_hybrid switched on for Sigenstor"
 
     return failed
 
@@ -1844,6 +1880,7 @@ def run_sigenergy_tests(my_predbat):
         ("get_inverter_serial", test_sigenergy_get_inverter_serial),
         ("build_tls_context", test_sigenergy_build_tls_context),
         ("battery_max_power", test_sigenergy_battery_max_power),
+        ("battery_max_charge_power_dc", test_sigenergy_battery_max_charge_power_dc),
         ("options_time_format", test_sigenergy_options_time_format),
         ("update_control_time_validation", test_sigenergy_update_control_time_validation),
         ("set_operating_mode", test_sigenergy_set_operating_mode),

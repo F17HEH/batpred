@@ -1644,7 +1644,16 @@ Add the following automations to `automations.yaml` (or configure via the UI):
                 entity_id: number.sigen_plant_grid_import_limitation
               data:
                 value: 0
-        # If neither of the above conditions are met, set the limits to the input numbers
+        # If neither of the above conditions are met (Demand, Charging or Discharging), only
+        # restore the grid import limit here. Do NOT touch the charge/discharge cut-off SoC
+        # entities in this branch: Predbat writes its own target SoC and reserve/floor SoC
+        # directly to number.sigen_plant_ess_charge_cut_off_state_of_charge and
+        # number.sigen_plant_ess_discharge_cut_off_state_of_charge (via the `charge_limit`
+        # and `reserve` entries in apps.yaml) *before* it flips predbat_requested_mode. If this
+        # automation also hard-codes those two entities to 100/0 here, it fires immediately
+        # after and silently overwrites whatever partial charge target or discharge floor
+        # Predbat just calculated for the current plan window, forcing a full charge/discharge
+        # instead of the planned one.
         - conditions:
           - condition: not
             conditions:
@@ -1657,48 +1666,38 @@ Add the following automations to `automations.yaml` (or configure via the UI):
           sequence:
             - action: number.set_value
               target:
-                entity_id: number.sigen_plant_ess_charge_cut_off_state_of_charge
-              data:
-                value: 100
-            - action: number.set_value
-              target:
-                entity_id: number.sigen_plant_ess_discharge_cut_off_state_of_charge
-              data:
-                value: 0
-            - action: number.set_value
-              target:
                 entity_id: number.sigen_plant_grid_import_limitation
               data:
                 value: 100
 
-  - id: automation_sigen_ess_max_charging_limit_input_number_action
-    alias: Predbat max charging limit action
-    description: Mapper from input_number.charge_rate to number sigen_plant_ess_max_charging_limit
-    triggers:
+- id: automation_sigen_ess_max_charging_limit_input_number_action
+  alias: Predbat max charging limit action
+  description: Mapper from input_number.charge_rate to number sigen_plant_ess_max_charging_limit
+  triggers:
     - trigger: state
       entity_id: input_number.charge_rate
-    actions:
+  actions:
     - action: number.set_value
       target:
         entity_id: number.sigen_plant_ess_max_charging_limit
       data:
         value: '{{ [(states(''input_number.charge_rate'') | float / 1000) | round(2),
           states(''sensor.sigen_inverter_ess_rated_charging_power'') | float] | min}}'
-    mode: single
+  mode: single
 
 - id: automation_sigen_ess_max_discharging_limit_input_number_action
   alias: Predbat max discharging limit action
   description: Mapper from input_number.discharge_rate to number.sigen_plant_ess_max_discharging_limit
   triggers:
-  - trigger: state
-    entity_id: input_number.discharge_rate
+    - trigger: state
+      entity_id: input_number.discharge_rate
   actions:
-  - action: number.set_value
-    target:
-      entity_id: number.sigen_plant_ess_max_discharging_limit
-    data:
-      value: '{{ [(states(''input_number.discharge_rate'') | float / 1000) | round(2),
-        states(''sensor.sigen_inverter_ess_rated_discharging_power'') | float] | min}}'
+    - action: number.set_value
+      target:
+        entity_id: number.sigen_plant_ess_max_discharging_limit
+      data:
+        value: '{{ [(states(''input_number.discharge_rate'') | float / 1000) | round(2),
+          states(''sensor.sigen_inverter_ess_rated_discharging_power'') | float] | min}}'
   mode: single
 ```
 
@@ -1711,6 +1710,126 @@ so you may need to adapt the above automations and `apps.yaml` (or rename your e
 
 *Important:* Depending upon your electricity supply, you may need to change where **number.sigen_plant_grid_import_limitation** is set to 100 in the first integration to any lower import limit that your electricity supplier may have imposed,
 e.g. 18kW roughly corresponds to an 80A supply.
+
+### DC-coupled solar charging
+
+Sigenstor is a hybrid inverter: solar connects directly to the DC bus, so the battery can be charged from PV at a
+rate higher than the AC inverter's rated power (`sensor.sigen_plant_available_max_active_power` /
+`sensor.sigen_plant_max_active_power`). Some Sigenstor systems report a battery rated charge power roughly double
+their inverter's AC rating. If this isn't configured, Predbat's ECO mode planning caps *all* battery charging —
+including charging straight from solar — at the AC inverter rating, which understates how quickly the battery
+fills from PV and can cause Predbat to needlessly schedule extra overnight grid charging.
+
+`switch.predbat_inverter_hybrid` defaults to On, so Predbat already knows Sigenstor is a hybrid/DC-coupled
+inverter — check it hasn't been turned off. The missing piece is `inverter_limit_charge_dc`, which is not set
+by the template and has no sensible default, so add it to your `apps.yaml`:
+
+```yaml
+  # Set this to your battery's rated DC charge power (in Watts) if it's higher than the AC inverter limit above.
+  # Find this from your inverter's rated charging power sensor, e.g.:
+  #   sensor.sigen_inverter_ess_rated_charging_power (or sensor.sigen_inverter_ess_rated_charge_power)
+  inverter_limit_charge_dc:
+    - 'sensor.sigen_inverter_ess_rated_charging_power'
+```
+
+See [inverter_limit_charge_dc](apps-yaml.md#inverter_limit_charge_dc) for full details of how this is used in the prediction model.
+
+### Grid export limit
+
+If your DNO/supplier imposes an export power limit (reported by some Sigenstor systems as a grid backfeed/export
+limitation, alongside the import limit above), set `export_limit` in `apps.yaml` so Predbat's forced-export planning
+doesn't plan to export more than your system is actually allowed to push to the grid:
+
+```yaml
+  export_limit:
+    - 3600   # Watts, e.g. a 3.6kW G98/G99 export limit — replace with your own DNO limit or grid export limitation sensor
+```
+
+### Grid import safety watchdog and DC solar monitoring
+
+`number.sigen_plant_grid_import_limitation` (set by the automation above) is a *software* limit — it relies on the
+inverter's own firmware to enforce it. As a backstop against a stuck/slow control loop, misconfigured supply limit,
+or firmware not honouring the limit quickly enough during a fast forced-charge ramp, add a watchdog that steps in
+if actual grid import ever exceeds your supply's real fuse rating, plus two template sensors that make DC-coupled
+solar charging visible (so it's clear PV going straight into the battery isn't being lost or double-counted as
+AC load/export):
+
+```yaml
+input_number:
+  # Set this to your real supply fuse rating in Watts, e.g. 18000 for an 80A single-phase supply
+  sigen_max_grid_import_w:
+    name: "Sigenergy max grid import (safety limit)"
+    initial: 18000
+    min: 1000
+    max: 30000
+    step: 100
+    mode: box
+    unit_of_measurement: W
+
+template:
+  - sensor:
+      # Portion of PV power going straight into the battery via the DC bus (never passes through
+      # the AC inverter stage, so it won't show up in sensor.sigen_plant_grid_active_power or as AC load)
+      - name: "Sigenergy DC Solar Charge Power"
+        unique_id: predbat_sigen_dc_charge_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set pv = states('sensor.sigen_plant_pv_power') | float(0) %}
+          {% set batt = states('sensor.sigen_plant_battery_power') | float(0) %}
+          {# battery_power_invert: true in apps.yaml means positive-here = charging #}
+          {{ [pv, batt] | min | max(0) }}
+
+      # Remaining PV power that is actually inverted to AC (covers house load or is exported) —
+      # this is the only part of PV subject to the AC inverter_limit / export_limit
+      - name: "Sigenergy AC Inverted Solar Power"
+        unique_id: predbat_sigen_ac_pv_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set pv = states('sensor.sigen_plant_pv_power') | float(0) %}
+          {% set dc = states('sensor.predbat_sigen_dc_charge_power') | float(0) %}
+          {{ (pv - dc) | max(0) }}
+
+automation:
+  - id: predbat_sigen_grid_import_safety_watchdog
+    alias: "Predbat Sigenergy grid import safety watchdog"
+    description: >
+      Backstop for number.sigen_plant_grid_import_limitation. If real grid import stays above the
+      configured supply limit for 10 seconds (i.e. the software limit hasn't been honoured in time),
+      force the plant back to self-consumption and notify, rather than risk tripping the main fuse.
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.sigen_plant_grid_active_power
+        above: input_number.sigen_max_grid_import_w
+        for:
+          seconds: 10
+    actions:
+      - action: select.select_option
+        target:
+          entity_id: select.sigen_plant_remote_ems_control_mode
+        data:
+          option: "Maximum Self Consumption"
+      - action: number.set_value
+        target:
+          entity_id: number.sigen_plant_grid_import_limitation
+        data:
+          value: 0
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.predbat_requested_mode
+        data:
+          option: "Demand"
+      - action: notify.notify
+        data:
+          title: "Predbat / Sigenergy safety watchdog"
+          message: >
+            Grid import exceeded {{ states('input_number.sigen_max_grid_import_w') }}W for 10s
+            (was {{ states('sensor.sigen_plant_grid_active_power') }}W) — forced back to self-consumption.
+```
 
 ## Sigenergy Cloud
 
